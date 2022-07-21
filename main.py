@@ -174,6 +174,7 @@ def main():
                 actor_critic,
                 getattr(utils.get_vec_normalize(envs), 'obs_rms', None)
             ], os.path.join(save_path, args.env_name + ".pt"))
+            print("Saved actor_critic model to disk!")
 
         if j % args.log_interval == 0 and len(episode_rewards) > 1:
             total_num_steps = (j + 1) * args.num_processes * args.num_steps
