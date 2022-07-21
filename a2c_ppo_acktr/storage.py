@@ -99,6 +99,7 @@ class RolloutStorage(object):
                                                                   1] * gae
                     self.returns[step] = gae + self.value_preds[step]
             else:
+                #print(self.rewards.size(0))
                 self.returns[-1] = next_value
                 for step in reversed(range(self.rewards.size(0))):
                     self.returns[step] = self.returns[step + 1] * \
