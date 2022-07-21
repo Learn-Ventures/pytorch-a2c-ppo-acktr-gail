@@ -1,69 +1,53 @@
-import os
+import os, sys
+sys.path.append('pybullet-gym')
 
 import gym
 import numpy as np
 import torch
 from gym.spaces.box import Box
-from gym.wrappers.clip_action import ClipAction
-from stable_baselines3.common.atari_wrappers import (ClipRewardEnv,
-                                                     EpisodicLifeEnv,
-                                                     FireResetEnv,
-                                                     MaxAndSkipEnv,
-                                                     NoopResetEnv, WarpFrame)
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import (DummyVecEnv, SubprocVecEnv,
-                                              VecEnvWrapper)
-from stable_baselines3.common.vec_env.vec_normalize import \
+
+from baselines import bench
+from baselines.common.atari_wrappers import make_atari, wrap_deepmind
+from baselines.common.vec_env import VecEnvWrapper
+from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
+from baselines.common.vec_env.shmem_vec_env import ShmemVecEnv
+from baselines.common.vec_env.vec_normalize import \
     VecNormalize as VecNormalize_
 
-try:
-    import dmc2gym
-except ImportError:
-    pass
-
-try:
-    import roboschool
-except ImportError:
-    pass
-
+import pybulletgym
 try:
     import pybullet_envs
 except ImportError:
     pass
 
-
 def make_env(env_id, seed, rank, log_dir, allow_early_resets):
     def _thunk():
         if env_id.startswith("dm"):
             _, domain, task = env_id.split('.')
-            env = dmc2gym.make(domain_name=domain, task_name=task)
-            env = ClipAction(env)
+            env = dm_control2gym.make(domain_name=domain, task_name=task)
         else:
             env = gym.make(env_id)
 
         is_atari = hasattr(gym.envs, 'atari') and isinstance(
             env.unwrapped, gym.envs.atari.atari_env.AtariEnv)
         if is_atari:
-            env = NoopResetEnv(env, noop_max=30)
-            env = MaxAndSkipEnv(env, skip=4)
+            env = make_atari(env_id)
 
         env.seed(seed + rank)
+        obs_shape = env.observation_space.shape
 
         if str(env.__class__.__name__).find('TimeLimit') >= 0:
             env = TimeLimitMask(env)
 
         if log_dir is not None:
-            env = Monitor(env,
-                          os.path.join(log_dir, str(rank)),
-                          allow_early_resets=allow_early_resets)
+            env = bench.Monitor(
+                env,
+                os.path.join(log_dir, str(rank)),
+                allow_early_resets=allow_early_resets)
 
         if is_atari:
             if len(env.observation_space.shape) == 3:
-                env = EpisodicLifeEnv(env)
-                if "FIRE" in env.unwrapped.get_action_meanings():
-                    env = FireResetEnv(env)
-                env = WarpFrame(env, width=84, height=84)
-                env = ClipRewardEnv(env)
+                env = wrap_deepmind(env)
         elif len(env.observation_space.shape) == 3:
             raise NotImplementedError(
                 "CNN models work only for atari,\n"
@@ -76,7 +60,6 @@ def make_env(env_id, seed, rank, log_dir, allow_early_resets):
             env = TransposeImage(env, op=[2, 0, 1])
 
         return env
-
     return _thunk
 
 
@@ -94,13 +77,13 @@ def make_vec_envs(env_name,
     ]
 
     if len(envs) > 1:
-        envs = SubprocVecEnv(envs)
+        envs = ShmemVecEnv(envs, context='fork')
     else:
         envs = DummyVecEnv(envs)
 
     if len(envs.observation_space.shape) == 1:
         if gamma is None:
-            envs = VecNormalize(envs, norm_reward=False)
+            envs = VecNormalize(envs, ret=False)
         else:
             envs = VecNormalize(envs, gamma=gamma)
 
@@ -169,7 +152,6 @@ class VecPyTorch(VecEnvWrapper):
         """Return only every `skip`-th frame"""
         super(VecPyTorch, self).__init__(venv)
         self.device = device
-        # TODO: Fix data types
 
     def reset(self):
         obs = self.venv.reset()
@@ -196,12 +178,12 @@ class VecNormalize(VecNormalize_):
         self.training = True
 
     def _obfilt(self, obs, update=True):
-        if self.obs_rms:
+        if self.ob_rms:
             if self.training and update:
-                self.obs_rms.update(obs)
-            obs = np.clip((obs - self.obs_rms.mean) /
-                          np.sqrt(self.obs_rms.var + self.epsilon),
-                          -self.clip_obs, self.clip_obs)
+                self.ob_rms.update(obs)
+            obs = np.clip((obs - self.ob_rms.mean) /
+                          np.sqrt(self.ob_rms.var + self.epsilon),
+                          -self.clipob, self.clipob)
             return obs
         else:
             return obs
@@ -231,15 +213,14 @@ class VecPyTorchFrameStack(VecEnvWrapper):
         self.stacked_obs = torch.zeros((venv.num_envs, ) +
                                        low.shape).to(device)
 
-        observation_space = gym.spaces.Box(low=low,
-                                           high=high,
-                                           dtype=venv.observation_space.dtype)
+        observation_space = gym.spaces.Box(
+            low=low, high=high, dtype=venv.observation_space.dtype)
         VecEnvWrapper.__init__(self, venv, observation_space=observation_space)
 
     def step_wait(self):
         obs, rews, news, infos = self.venv.step_wait()
         self.stacked_obs[:, :-self.shape_dim0] = \
-            self.stacked_obs[:, self.shape_dim0:].clone()
+            self.stacked_obs[:, self.shape_dim0:]
         for (i, new) in enumerate(news):
             if new:
                 self.stacked_obs[i] = 0
