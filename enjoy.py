@@ -100,8 +100,8 @@ while True:
     if done:
       total_reward += episode_reward
       nr_episodes += 1
+      print("------\tEpisode %d finished (with reward %d), avg-reward / episode: %.2f" %(nr_episodes, episode_reward, total_reward/nr_episodes))
       episode_reward = 0
-      print("------\tEpisode %d finished, avg-reward / episode: %.2f" %(nr_episodes, total_reward/nr_episodes))
 
       if render_and_dump:
         writer.close()
